@@ -1,0 +1,4 @@
+[[redirects]]
+    from = "/shopify-webhook"
+    to = "/.netlify/functions/shopify-webhook"
+    status = 200

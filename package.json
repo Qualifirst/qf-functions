@@ -1,9 +1,0 @@
-{
-  "name": "qf-functions",
-  "version": "2025.6.1",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@netlify/functions": "^4.1.4"
-  }
-}
