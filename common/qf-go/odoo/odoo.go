@@ -50,7 +50,8 @@ func jsonRpc(service string, method string, args []any) (any, error) {
 	uid := os.Getenv("ODOO_USER_ID")
 	pwd := os.Getenv("ODOO_PASSWORD")
 	domain := os.Getenv("ODOO_DOMAIN")
-	if !(db != "" && domain != "" && uid != "" && pwd != "") {
+	cfKey := os.Getenv("CLOUDFLARE_BYPASS_WAF")
+	if !(db != "" && domain != "" && uid != "" && pwd != "" && cfKey != "") {
 		return nil, fmt.Errorf("invalid or incomplete Odoo environment variables")
 	}
 
@@ -72,7 +73,13 @@ func jsonRpc(service string, method string, args []any) (any, error) {
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	response, err := client.Post(url, "application/json", bytes.NewBuffer(bodyJson))
+	request, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyJson))
+	if err != nil {
+		return nil, fmt.Errorf("error creating request for Odoo JSON-RPC call:\n>>> %w", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Cloudflare-Bypass-WAF", cfKey)
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("request error during Odoo JSON-RPC call:\n>>> %w", err)
 	}
