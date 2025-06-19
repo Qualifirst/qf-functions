@@ -43,5 +43,5 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (*event
 }
 
 func main() {
-	lambda.Start(handler)
+	lambda.Start(qfn.CheckEnvMiddleware(qfn.AuthMiddleware(handler)))
 }
