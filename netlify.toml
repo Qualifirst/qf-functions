@@ -2,3 +2,23 @@
     from = "/shopify-webhook"
     to = "/.netlify/functions/shopify-webhook"
     status = 200
+
+[[redirects]]
+    from = "/shopify-process-company_locations"
+    to = "/.netlify/functions/shopify-process-company_locations"
+    status = 200
+
+[[redirects]]
+    from = "/shopify-process-customers"
+    to = "/.netlify/functions/shopify-process-customers"
+    status = 200
+
+[[redirects]]
+    from = "/shopify-process-orders"
+    to = "/.netlify/functions/shopify-process-orders"
+    status = 200
+
+[[redirects]]
+    from = "/shopify-process-order_transactions"
+    to = "/.netlify/functions/shopify-process-order_transactions"
+    status = 200

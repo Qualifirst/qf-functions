@@ -21,13 +21,13 @@ func PublishMessage(exchange, routingKey, body string) error {
 	rUrl := fmt.Sprintf("amqp://%s:%s@%s", rUser, rPass, rHost)
 	conn, err := amqp.Dial(rUrl)
 	if err != nil {
-		return fmt.Errorf("failed to connect to RabbitMQ: %v", err)
+		return fmt.Errorf("failed to connect to RabbitMQ:\n>>> %w", err)
 	}
 	defer conn.Close()
 
 	ch, err := conn.Channel()
 	if err != nil {
-		return fmt.Errorf("failed to open a channel to RabbitMQ: %v", err)
+		return fmt.Errorf("failed to open a channel to RabbitMQ:\n>>> %w", err)
 	}
 	defer ch.Close()
 
@@ -40,7 +40,7 @@ func PublishMessage(exchange, routingKey, body string) error {
 		DeliveryMode: amqp.Persistent,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to publish a message to RabbitMQ: %v", err)
+		return fmt.Errorf("failed to publish a message to RabbitMQ:\n>>> %w", err)
 	}
 
 	log.Printf("Published message to RabbitMQ: exchange=%s key=%s", exchange, routingKey)
