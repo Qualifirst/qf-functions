@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	qfn "qf/go/netlify"
 	"qf/go/rabbitmq"
 	"qf/go/shopify"
 
@@ -44,5 +45,5 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (*event
 }
 
 func main() {
-	lambda.Start(handler)
+	lambda.Start(qfn.CheckEnvMiddleware(handler))
 }

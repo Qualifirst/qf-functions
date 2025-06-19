@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
+	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
 )
@@ -27,6 +29,21 @@ func AuthMiddleware(function NetlifyFunction) NetlifyFunction {
 			return &events.APIGatewayProxyResponse{
 				StatusCode: 401,
 				Body:       "Unauthorized",
+			}, nil
+		}
+
+		return function(ctx, request)
+	}
+}
+
+func CheckEnvMiddleware(function NetlifyFunction) NetlifyFunction {
+	return func(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+		currentEnv := os.Getenv("ENV")
+		disabledEnvs := os.Getenv("ENV_DISABLE")
+		if currentEnv == "" || (disabledEnvs != "" && slices.Contains(strings.Split(disabledEnvs, ","), currentEnv)) {
+			return &events.APIGatewayProxyResponse{
+				StatusCode: 404,
+				Body:       "Not Found",
 			}, nil
 		}
 
