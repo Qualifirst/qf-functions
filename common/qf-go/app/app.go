@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"runtime/trace"
 	"slices"
@@ -89,27 +88,7 @@ func TimeoutMiddleware(function NetlifyFunction) NetlifyFunction {
 		timeoutCtx, cancel := context.WithTimeout(ctx, 9500*time.Millisecond)
 		defer cancel()
 
-		type result struct {
-			Response *events.APIGatewayProxyResponse
-			Error    error
-		}
-
-		resultChan := make(chan result, 1)
-
-		go func() {
-			response, err := function(timeoutCtx, request)
-			resultChan <- result{
-				Response: response,
-				Error:    err,
-			}
-		}()
-
-		select {
-		case res := <-resultChan:
-			return res.Response, res.Error
-		case <-timeoutCtx.Done():
-			return NetlifyResponse(int(http.StatusGatewayTimeout), "Request timed out")
-		}
+		return function(timeoutCtx, request)
 	}
 }
 
