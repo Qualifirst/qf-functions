@@ -2,22 +2,26 @@ package odoo
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"net/http"
 	"os"
+	"qf/go/app"
 	"reflect"
 	"strings"
 	"time"
 )
 
-var CompanyQF = 2
-var CompanyFM = 3
-var ShippingSku = "WEBSHIP"
-var TwoshipSku = "2SHIP_DELIVERY"
-var DateFormat = "2006-01-02 15:04:05"
+type companyId int
+
+const CompanyQF = companyId(2)
+const CompanyFM = companyId(3)
+const ShippingSku = "WEBSHIP"
+const TwoshipSku = "2SHIP_DELIVERY"
+const DateFormat = "2006-01-02 15:04:05"
 
 type command struct{}
 
@@ -45,7 +49,7 @@ func (c *command) Set(ids []int) []any {
 
 var Command command
 
-func jsonRpc(service string, method string, args []any) (any, error) {
+func jsonRpc(ctx context.Context, service string, method string, args []any) (any, error) {
 	db := os.Getenv("ODOO_DB")
 	uid := os.Getenv("ODOO_USER_ID")
 	pwd := os.Getenv("ODOO_PASSWORD")
@@ -73,7 +77,7 @@ func jsonRpc(service string, method string, args []any) (any, error) {
 	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	request, err := http.NewRequest("POST", url, bytes.NewBuffer(bodyJson))
+	request, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyJson))
 	if err != nil {
 		return nil, fmt.Errorf("error creating request for Odoo JSON-RPC call:\n>>> %w", err)
 	}
@@ -118,40 +122,32 @@ func jsonRpc(service string, method string, args []any) (any, error) {
 	return result, nil
 }
 
-var globalContext = &map[string]any{}
-
-func GlobalContext(context map[string]any) (reset func()) {
-	currentContext := globalContext
-	maps.Copy(context, *globalContext)
-	globalContext = &context
-	return func() {
-		globalContext = currentContext
-	}
+func WithContext(ctx context.Context, odooContext map[string]any) func() {
+	cacheKey := []any{"odoo", "context"}
+	currentCtx, _ := app.GetCacheValue(ctx, cacheKey, map[string]any{})
+	maps.Copy(odooContext, currentCtx)
+	return app.SetCacheValue(ctx, cacheKey, odooContext)
 }
 
-func JsonRpcExecuteKw(model, method string, args []any, kwargs map[string]any) (any, error) {
+func JsonRpcExecuteKw(ctx context.Context, model, method string, args []any, kwargs map[string]any) (any, error) {
+	odooCtx, _ := app.GetCacheValue(ctx, []any{"odoo", "context"}, map[string]any{})
 	if kwargs == nil {
 		kwargs = map[string]any{}
 	}
-	ctx := *globalContext
-	kwargsContext, kwargsContextFound := kwargs["context"]
-	if kwargsContextFound && kwargsContext != nil && reflect.ValueOf(kwargsContext).Kind() == reflect.Map {
-		maps.Copy(ctx, kwargsContext.(map[string]any))
+	kwargsCtx, kwargsCtxFound := kwargs["context"]
+	if kwargsCtxFound && kwargsCtx != nil && reflect.ValueOf(kwargsCtx).Kind() == reflect.Map {
+		maps.Copy(odooCtx, kwargsCtx.(map[string]any))
 	}
-	kwargs["context"] = ctx
-	return jsonRpc("object", "execute_kw", []any{model, method, args, kwargs})
+	kwargs["context"] = odooCtx
+	return jsonRpc(ctx, "object", "execute_kw", []any{model, method, args, kwargs})
 }
 
-func SearchRead(model string, domain []any, fields []string, limit int, context map[string]any) ([]map[string]any, error) {
-	ctx := *globalContext
-	if context != nil {
-		maps.Copy(ctx, context)
-	}
-	records, err := JsonRpcExecuteKw(model, "search_read", []any{}, map[string]any{
+func SearchRead(ctx context.Context, model string, domain []any, fields []string, limit int, odooContext map[string]any) ([]map[string]any, error) {
+	records, err := JsonRpcExecuteKw(ctx, model, "search_read", []any{}, map[string]any{
 		"domain":  domain,
 		"fields":  fields,
 		"limit":   limit,
-		"context": ctx,
+		"context": odooContext,
 	})
 	if err != nil {
 		return nil, err
@@ -174,11 +170,11 @@ func SearchRead(model string, domain []any, fields []string, limit int, context 
 	return recordsListMap, nil
 }
 
-func SearchCount(model string, domain []any, context map[string]any) (int, error) {
-	count, err := JsonRpcExecuteKw(model, "search_count", []any{
+func SearchCount(ctx context.Context, model string, domain []any, odooContext map[string]any) (int, error) {
+	count, err := JsonRpcExecuteKw(ctx, model, "search_count", []any{
 		domain,
 	}, map[string]any{
-		"context": context,
+		"context": odooContext,
 	})
 	if err != nil {
 		return 0, err
@@ -192,65 +188,37 @@ func SearchCount(model string, domain []any, context map[string]any) (int, error
 	return int(countFloat), nil
 }
 
-func SearchReadOne(model string, domain []any, fields []string, context map[string]any) (map[string]any, error) {
-	count, err := SearchCount(model, domain, context)
+func SearchReadOne(ctx context.Context, model string, domain []any, fields []string, odooContext map[string]any) (map[string]any, error) {
+	records, err := SearchRead(ctx, model, domain, fields, 2, odooContext)
 	if err != nil {
 		return nil, err
 	}
-	if count != 1 {
-		return nil, fmt.Errorf("search expected exactly 1 result, %d received", count)
-	}
-	records, err := SearchRead(model, domain, fields, 1, context)
-	if err != nil {
-		return nil, err
+	if len(records) != 1 {
+		return nil, fmt.Errorf("search expected exactly 1 result, %d received", len(records))
 	}
 	return records[0], nil
 }
 
-func SearchReadById(model string, id int, fields []string, context map[string]any) (map[string]any, error) {
-	return SearchReadOne(model, []any{[]any{"id", "=", id}}, fields, nil)
+func SearchReadById(ctx context.Context, model string, id int, fields []string, odooContext map[string]any) (map[string]any, error) {
+	return SearchReadOne(ctx, model, []any{[]any{"id", "=", id}}, fields, nil)
 }
 
-func ReadRecordByXID(model string, xid string, fields []string) (map[string]any, error) {
-	splitXid := strings.Split(xid, ".")
-	if len(splitXid) != 2 {
-		return nil, fmt.Errorf("invalid xid: %s", xid)
-	}
-	xidModule := splitXid[0]
-	xidName := splitXid[1]
-
-	modelData, err := SearchRead(
-		"ir.model.data",
-		[]any{
-			[]any{"module", "=", xidModule},
-			[]any{"name", "=", xidName},
-		},
-		[]string{"id", "module", "name", "model", "res_id"},
-		1, nil,
-	)
+func ReadRecordByXID(ctx context.Context, model string, xid string, fields []string) (map[string]any, error) {
+	imd, err := SearchIrModelData(ctx, model, xid)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(modelData) > 1 {
-		return nil, fmt.Errorf("non-unique results for XID %s", xid)
-	}
-
-	if len(modelData) == 0 {
+	if !imd.Exists {
 		// Nothing found, but it is not an error
 		return nil, nil
 	}
 
-	foundModel := modelData[0]["model"].(string)
-	if model != foundModel {
-		return nil, fmt.Errorf("model mismatch for XID %s: %s != %s", xid, model, foundModel)
-	}
-
-	recordId := int(modelData[0]["res_id"].(float64))
 	recordData, err := SearchReadOne(
+		ctx,
 		model,
 		[]any{
-			[]any{"id", "=", recordId},
+			[]any{"id", "=", imd.ResId},
 		},
 		fields,
 		map[string]any{"active_test": false},
@@ -259,59 +227,141 @@ func ReadRecordByXID(model string, xid string, fields []string) (map[string]any,
 		if strings.Contains(err.Error(), " 0 received") {
 			// The XID (ir.model.data) remains in Odoo, but the related record was deleted
 			// So we can safely delete the XID and return that no records were found
-			Unlink("ir.model.data", int(modelData[0]["id"].(float64)), nil)
+			Unlink(ctx, "ir.model.data", imd.Id, nil)
+			imd.Exists = false
+			xidDataCacheKey := []any{"xidData", model, xid}
+			app.SetCacheValue(ctx, xidDataCacheKey, imd) // Set the value as "doesn't exist" in the cache
 			return nil, nil
 		}
-		return nil, fmt.Errorf("error reading data for record %v of type %v with id %v\nERROR=%w", xid, model, recordId, err)
+		return nil, fmt.Errorf("error reading data for record %v of type %v with id %v\nERROR=%w", xid, model, imd.ResId, err)
 	}
 
 	return recordData, nil
 }
 
-func GetIDByXID(model string, xid string) (int, error) {
-	rec, err := ReadRecordByXID(model, xid, []string{"id"})
-	if err != nil || rec == nil {
+func GetIDByXID(ctx context.Context, model string, xid string) (int, error) {
+	imd, err := SearchIrModelData(ctx, model, xid)
+	if err != nil {
 		return 0, err
 	}
-	return int(rec["id"].(float64)), nil
+	if !imd.Exists {
+		// Nothing found, but it is not an error
+		return 0, nil
+	}
+	return imd.ResId, nil
 }
 
-func AssignRecordXID(model string, id int, xid string) error {
+type IrModelData struct {
+	Id     int
+	Module string
+	Name   string
+	Model  string
+	ResId  int
+	Exists bool
+	Xid    string
+}
+
+func PrefetchIrModelData(ctx context.Context, xids []IrModelData) error {
+	domain := make([]any, 0, (len(xids)*3)+(len(xids)-1))
+	for range len(xids) - 1 {
+		domain = append(domain, "|")
+	}
+	for _, xid := range xids {
+		domain = append(domain, "&")
+		domain = append(domain, []any{"module", "=", xid.Module})
+		domain = append(domain, []any{"name", "=", xid.Name})
+	}
+	res, err := SearchRead(ctx, "ir.model.data", domain, []string{"module", "name", "model", "res_id", "id"}, 0, nil)
+	if err != nil {
+		return err
+	}
+	foundMap := map[string]map[string]any{}
+	for _, r := range res {
+		foundMap[r["module"].(string)+"."+r["name"].(string)] = r
+	}
+	for _, xid := range xids {
+		xidDataCacheKey := []any{"xidData", xid.Model, xid.Xid}
+		foundXid, found := foundMap[xid.Xid]
+		if !found {
+			app.SetCacheValue(ctx, xidDataCacheKey, xid)
+			continue
+		}
+		foundModel := foundXid["model"].(string)
+		if foundModel != xid.Model {
+			return fmt.Errorf("incorrect model for xid %v, expected %v, got %v", xid.Xid, xid.Model, foundModel)
+		}
+		xid.Exists = true
+		xid.ResId = int(foundXid["res_id"].(float64))
+		xid.Id = int(foundXid["id"].(float64))
+		app.SetCacheValue(ctx, xidDataCacheKey, xid)
+	}
+	return nil
+}
+
+func SearchIrModelData(ctx context.Context, model string, xid string) (imd IrModelData, err error) {
+	xidDataCacheKey := []any{"xidData", model, xid}
+	if imd, found := app.GetCacheValue(ctx, xidDataCacheKey, IrModelData{}); found {
+		return imd, nil
+	}
 	splitXid := strings.Split(xid, ".")
 	if len(splitXid) != 2 {
-		return fmt.Errorf("invalid xid: %s", xid)
+		return imd, fmt.Errorf("invalid xid: %s", xid)
 	}
 	xidModule := splitXid[0]
 	xidName := splitXid[1]
-
+	imd.Module = xidModule
+	imd.Name = xidName
+	imd.Model = model
+	imd.Xid = xid
 	modelData, err := SearchRead(
+		ctx,
 		"ir.model.data",
 		[]any{
 			[]any{"module", "=", xidModule},
 			[]any{"name", "=", xidName},
 		},
-		[]string{"module", "name", "model", "res_id"},
-		1,
-		nil,
+		[]string{"id", "module", "name", "model", "res_id"},
+		0, nil,
 	)
+	if err != nil {
+		return imd, err
+	}
+	if len(modelData) > 1 {
+		return imd, fmt.Errorf("expected at most 1 match for xid %v, got %v", xid, len(modelData))
+	}
+	if len(modelData) == 0 {
+		// Nothing was found, but this is not an error
+		app.SetCacheValue(ctx, xidDataCacheKey, imd) // Cache empty struct for the XID
+		return imd, nil                              // Return empty struct with no error
+	}
+	foundModel := modelData[0]["model"].(string)
+	if foundModel != imd.Model {
+		return imd, fmt.Errorf("model mismatch for xid %v, expected %v, got %v", xid, imd.Model, foundModel)
+	}
+	imd.Id = int(modelData[0]["id"].(float64))
+	imd.Module = modelData[0]["module"].(string)
+	imd.Name = modelData[0]["name"].(string)
+	imd.Xid = imd.Module + "." + imd.Name
+	imd.ResId = int(modelData[0]["res_id"].(float64))
+	imd.Exists = true
+	app.SetCacheValue(ctx, xidDataCacheKey, imd)
+	return imd, nil
+}
+
+func AssignRecordXID(ctx context.Context, model string, id int, xid string) error {
+	imd, err := SearchIrModelData(ctx, model, xid)
 	if err != nil {
 		return err
 	}
 
-	if len(modelData) == 1 {
-		foundModel := modelData[0]["model"].(string)
-		foundId := int(modelData[0]["res_id"].(float64))
-		if foundModel != model || foundId != id {
-			return fmt.Errorf("xid already assigned to different record %s(%d)", foundModel, foundId)
-		}
-
+	if imd.Exists {
 		// xid already assigned to correct record
 		return nil
 	}
 
-	_, err = Create("ir.model.data", map[string]any{
-		"module": xidModule,
-		"name":   xidName,
+	imdId, err := Create(ctx, "ir.model.data", map[string]any{
+		"module": imd.Module,
+		"name":   imd.Name,
 		"model":  model,
 		"res_id": id,
 	}, nil)
@@ -319,11 +369,17 @@ func AssignRecordXID(model string, id int, xid string) error {
 		return fmt.Errorf("error assigning xid %v to record %v(%v): %w", xid, model, id, err)
 	}
 
+	imd.Id = imdId
+	imd.ResId = id
+	imd.Exists = true
+	xidDataCacheKey := []any{"xidData", model, xid}
+	app.SetCacheValue(ctx, xidDataCacheKey, imd) // Update cache to make sure it is found from this point on
+
 	return nil
 }
 
-func CreateMulti(model string, data []map[string]any, context map[string]any) ([]int, error) {
-	result, err := JsonRpcExecuteKw(model, "create", []any{data}, map[string]any{"context": context})
+func CreateMulti(ctx context.Context, model string, data []map[string]any, odooContext map[string]any) ([]int, error) {
+	result, err := JsonRpcExecuteKw(ctx, model, "create", []any{data}, map[string]any{"context": odooContext})
 	if err != nil {
 		return []int{}, err
 	}
@@ -345,25 +401,25 @@ func CreateMulti(model string, data []map[string]any, context map[string]any) ([
 	return idListInt, nil
 }
 
-func Create(model string, data map[string]any, context map[string]any) (int, error) {
-	xid, hasXid := context["xid"]
-	delete(context, "xid")
-	idList, err := CreateMulti(model, []map[string]any{data}, context)
+func Create(ctx context.Context, model string, data map[string]any, odooContext map[string]any) (int, error) {
+	xid, hasXid := odooContext["xid"]
+	delete(odooContext, "xid")
+	idList, err := CreateMulti(ctx, model, []map[string]any{data}, odooContext)
 	if err != nil {
 		return 0, err
 	}
 	if hasXid {
-		err := AssignRecordXID(model, idList[0], xid.(string))
+		err := AssignRecordXID(ctx, model, idList[0], xid.(string))
 		if err != nil {
-			UnlinkMulti(model, idList, nil)
+			UnlinkMulti(ctx, model, idList, nil)
 			return 0, fmt.Errorf("error assigning XID %v after creation of %v (%v)\nERROR=%w", xid, model, idList[0], err)
 		}
 	}
 	return idList[0], nil
 }
 
-func WriteMulti(model string, ids []int, data map[string]any, context map[string]any) error {
-	result, err := JsonRpcExecuteKw(model, "write", []any{ids, data}, map[string]any{"context": context})
+func WriteMulti(ctx context.Context, model string, ids []int, data map[string]any, odooContext map[string]any) error {
+	result, err := JsonRpcExecuteKw(ctx, model, "write", []any{ids, data}, map[string]any{"context": odooContext})
 	if err != nil {
 		return err
 	}
@@ -376,12 +432,12 @@ func WriteMulti(model string, ids []int, data map[string]any, context map[string
 	return nil
 }
 
-func Write(model string, id int, data map[string]any, context map[string]any) error {
-	return WriteMulti(model, []int{id}, data, context)
+func Write(ctx context.Context, model string, id int, data map[string]any, odooContext map[string]any) error {
+	return WriteMulti(ctx, model, []int{id}, data, odooContext)
 }
 
-func SearchIds(model string, domain []any, context map[string]any) ([]int, error) {
-	result, err := SearchRead(model, domain, []string{"id"}, 0, context)
+func SearchIds(ctx context.Context, model string, domain []any, odooContext map[string]any) ([]int, error) {
+	result, err := SearchRead(ctx, model, domain, []string{"id"}, 0, odooContext)
 	if err != nil {
 		return []int{}, err
 	}
@@ -398,8 +454,8 @@ func SearchIds(model string, domain []any, context map[string]any) ([]int, error
 	return ids, nil
 }
 
-func SearchId(model string, domain []any, context map[string]any) (int, error) {
-	ids, err := SearchIds(model, domain, context)
+func SearchId(ctx context.Context, model string, domain []any, odooContext map[string]any) (int, error) {
+	ids, err := SearchIds(ctx, model, domain, odooContext)
 	if err != nil {
 		return 0, err
 	}
@@ -409,8 +465,8 @@ func SearchId(model string, domain []any, context map[string]any) (int, error) {
 	return ids[0], nil
 }
 
-func SearchFirstId(model string, domain []any, context map[string]any) (int, error) {
-	ids, err := SearchIds(model, domain, context)
+func SearchFirstId(ctx context.Context, model string, domain []any, odooContext map[string]any) (int, error) {
+	ids, err := SearchIds(ctx, model, domain, odooContext)
 	if err != nil {
 		return 0, err
 	}
@@ -420,8 +476,8 @@ func SearchFirstId(model string, domain []any, context map[string]any) (int, err
 	return ids[0], nil
 }
 
-func SearchWrite(model string, domain []any, data map[string]any, context map[string]any) error {
-	ids, err := SearchIds(model, domain, context)
+func SearchWrite(ctx context.Context, model string, domain []any, data map[string]any, odooContext map[string]any) error {
+	ids, err := SearchIds(ctx, model, domain, odooContext)
 	if err != nil {
 		return err
 	}
@@ -431,11 +487,11 @@ func SearchWrite(model string, domain []any, data map[string]any, context map[st
 		return nil
 	}
 
-	return WriteMulti(model, ids, data, context)
+	return WriteMulti(ctx, model, ids, data, odooContext)
 }
 
-func SearchWriteOne(model string, domain []any, data map[string]any, context map[string]any) error {
-	ids, err := SearchIds(model, domain, context)
+func SearchWriteOne(ctx context.Context, model string, domain []any, data map[string]any, odooContext map[string]any) error {
+	ids, err := SearchIds(ctx, model, domain, odooContext)
 	if err != nil {
 		return err
 	}
@@ -444,11 +500,11 @@ func SearchWriteOne(model string, domain []any, data map[string]any, context map
 		return fmt.Errorf("search write expected exactly 1 match, got %d", len(ids))
 	}
 
-	return WriteMulti(model, ids, data, context)
+	return WriteMulti(ctx, model, ids, data, odooContext)
 }
 
-func FindOrCreate(model string, domain []any, createData map[string]any, context map[string]any) (int, error) {
-	ids, err := SearchIds(model, domain, context)
+func FindOrCreate(ctx context.Context, model string, domain []any, createData map[string]any, odooContext map[string]any) (int, error) {
+	ids, err := SearchIds(ctx, model, domain, odooContext)
 	if err != nil {
 		return 0, err
 	}
@@ -460,20 +516,20 @@ func FindOrCreate(model string, domain []any, createData map[string]any, context
 	if len(ids) == 1 {
 		return ids[0], nil
 	}
-	id, err := Create(model, createData, context)
+	id, err := Create(ctx, model, createData, odooContext)
 	if err != nil {
 		return 0, err
 	}
 	return id, nil
 }
 
-func FindFirstOrCreate(model string, domain []any, createData map[string]any, context map[string]any) (int, error) {
-	id, err := SearchFirstId(model, domain, context)
+func FindFirstOrCreate(ctx context.Context, model string, domain []any, createData map[string]any, odooContext map[string]any) (int, error) {
+	id, err := SearchFirstId(ctx, model, domain, odooContext)
 	if err != nil {
 		return 0, err
 	}
 	if id == 0 {
-		id, err = Create(model, createData, context)
+		id, err = Create(ctx, model, createData, odooContext)
 		if err != nil {
 			return 0, err
 		}
@@ -481,52 +537,34 @@ func FindFirstOrCreate(model string, domain []any, createData map[string]any, co
 	return id, nil
 }
 
-func WriteOrCreate(model string, domain []any, data map[string]any, writeOnlyData map[string]any, createOnlyData map[string]any, context map[string]any) (int, error) {
+func WriteOrCreate(ctx context.Context, model string, domain []any, data map[string]any, writeOnlyData map[string]any, createOnlyData map[string]any, odooContext map[string]any) (int, error) {
 	createData := map[string]any{}
 	maps.Copy(createData, data)
 	maps.Copy(createData, createOnlyData)
-	id, err := FindOrCreate(model, domain, createData, context)
+	id, err := FindOrCreate(ctx, model, domain, createData, odooContext)
 	if err != nil {
 		return 0, err
 	}
 	if writeOnlyData != nil {
 		maps.Copy(data, writeOnlyData)
 	}
-	err = Write(model, id, data, context)
+	err = Write(ctx, model, id, data, odooContext)
 	if err != nil {
 		return id, err
 	}
 	return id, nil
 }
 
-func UnlinkMulti(model string, ids []int, context map[string]any) error {
-	_, err := JsonRpcExecuteKw(model, "unlink", []any{ids}, map[string]any{"context": context})
+func UnlinkMulti(ctx context.Context, model string, ids []int, odooContext map[string]any) error {
+	_, err := JsonRpcExecuteKw(ctx, model, "unlink", []any{ids}, map[string]any{"context": odooContext})
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func Unlink(model string, id int, context map[string]any) error {
-	return UnlinkMulti(model, []int{id}, context)
-}
-
-func GetCountryAndStateIds(countryCode string, stateCode string) (int, int) {
-	var countryId, stateId int
-	country, err := SearchReadOne("res.country", []any{
-		[]any{"code", "=", countryCode},
-	}, []string{"id"}, nil)
-	if err == nil {
-		countryId = int(country["id"].(float64))
-		state, err := SearchReadOne("res.country.state", []any{
-			[]any{"country_id", "=", countryId},
-			[]any{"code", "=", stateCode},
-		}, []string{"id"}, nil)
-		if err == nil {
-			stateId = int(state["id"].(float64))
-		}
-	}
-	return countryId, stateId
+func Unlink(ctx context.Context, model string, id int, odooContext map[string]any) error {
+	return UnlinkMulti(ctx, model, []int{id}, odooContext)
 }
 
 func MapToDomain(dataMap map[string]any) []any {

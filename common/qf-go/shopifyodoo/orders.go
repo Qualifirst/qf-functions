@@ -1,6 +1,7 @@
 package shopifyodoo
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"qf/go/helpers"
@@ -98,20 +99,12 @@ func computeScheduledDate(orderDate time.Time, companyId int, address *types.Add
 	return scheduledDate, nil
 }
 
-func shopifyTaxLinesToOdooIds(taxLines *[]types.OrderTaxLine, companyId int) ([]int, error) {
+func shopifyTaxLinesToOdooIds(ctx context.Context, taxLines *[]types.OrderTaxLine, companyId int) ([]int, error) {
 	taxes := make([]int, 0, len(*taxLines))
 	for _, taxLine := range *taxLines {
 		taxName := strings.ReplaceAll(fmt.Sprintf("%s %.2f%%", taxLine.Title, taxLine.RatePercentage), ".00%", "%")
-		taxData := map[string]any{
-			"name":         taxName,
-			"description":  taxName,
-			"amount_type":  "percent",
-			"type_tax_use": "sale",
-			"amount":       taxLine.RatePercentage,
-			"company_id":   companyId,
-		}
-		taxId, err := odoo.FindFirstOrCreate("account.tax", odoo.MapToDomain(taxData), taxData, nil)
-		if err != nil {
+		taxId, err := odoo.OdooDataManager.GetTax(ctx, taxName, taxLine.RatePercentage, companyId)
+		if err != nil || taxId == 0 {
 			return nil, fmt.Errorf("error getting taxes %v for company %v\nERROR=%w", taxName, companyId, err)
 		}
 		taxes = append(taxes, taxId)
@@ -119,20 +112,20 @@ func shopifyTaxLinesToOdooIds(taxLines *[]types.OrderTaxLine, companyId int) ([]
 	return taxes, nil
 }
 
-func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isNew bool, err error) {
+func shopifyOrderToOdoo(ctx context.Context, order *types.Order, customerOdooId int) (odooId int, isNew bool, err error) {
 	orderOdooXid, _ := ShopifyIdToOdooXid(*order.Id)
-	odooId, err = odoo.GetIDByXID("sale.order", orderOdooXid)
+	odooId, err = odoo.GetIDByXID(ctx, "sale.order", orderOdooXid)
 	if err != nil {
 		return 0, false, fmt.Errorf("error reading XID %v from Odoo\nERROR=%w", orderOdooXid, err)
 	}
 
-	shippingAddressOdooId, err := ensureShopifyCustomerAddressInOdoo(customerOdooId, &order.ShippingAddress, "delivery")
+	shippingAddressOdooId, err := ensureShopifyCustomerAddressInOdoo(ctx, customerOdooId, &order.ShippingAddress, "delivery")
 	if err != nil {
 		return 0, false, fmt.Errorf("error getting the shipping address from Odoo\nERROR=%w", err)
 	}
 	billingAddressOdooId := shippingAddressOdooId
 	if *order.BillingAddress.Id != *order.ShippingAddress.Id {
-		billingAddressOdooId, err = ensureShopifyCustomerAddressInOdoo(customerOdooId, &order.BillingAddress, "invoice")
+		billingAddressOdooId, err = ensureShopifyCustomerAddressInOdoo(ctx, customerOdooId, &order.BillingAddress, "invoice")
 		if err != nil {
 			return 0, false, fmt.Errorf("error getting the billing address from Odoo\nERROR=%w", err)
 		}
@@ -142,7 +135,7 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 	if strings.Contains(order.Name, "QF") {
 		companyId = odoo.CompanyQF
 	}
-	defer odoo.GlobalContext(map[string]any{"allowed_company_ids": []int{companyId}})()
+	defer odoo.WithContext(ctx, map[string]any{"allowed_company_ids": []int{int(companyId)}})()
 
 	orderData := map[string]any{
 		"partner_id":                     customerOdooId,
@@ -157,8 +150,8 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 		"amount_delivery":                0,
 		"no_handling_fee_reason":         "Shopify",
 	}
-	if src, err := odoo.FindFirstOrCreate("utm.source", []any{[]any{"name", "=ilike", "shopify"}}, map[string]any{"name": "Shopify"}, nil); err == nil {
-		orderData["source_id"] = src
+	if odoo.OdooDataManager.Data.Sources.Shopify != 0 {
+		orderData["source_id"] = int(odoo.OdooDataManager.Data.Sources.Shopify)
 	}
 
 	allSkus := make([]string, 0, order.Lines.Length()+1)
@@ -176,7 +169,7 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 	idsBySku := map[string]int{}
 	skusById := map[int]string{}
 	if len(allSkus) != 0 {
-		products, err := odoo.SearchRead("product.product", []any{[]any{"default_code", "in", allSkus}}, []string{"id", "default_code"}, 0, map[string]any{"active_test": false})
+		products, err := odoo.SearchRead(ctx, "product.product", []any{[]any{"default_code", "in", allSkus}}, []string{"id", "default_code"}, 0, map[string]any{"active_test": false})
 		if err != nil {
 			return 0, false, fmt.Errorf("error reading products for the order %v in Odoo\nERROR=%w", orderOdooXid, err)
 		}
@@ -189,7 +182,7 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 		}
 	}
 
-	odooLineIds, err := odoo.SearchIds("sale.order.line", []any{[]any{"order_id", "=", odooId}}, nil)
+	odooLineIds, err := odoo.SearchIds(ctx, "sale.order.line", []any{[]any{"order_id", "=", odooId}}, nil)
 	if err != nil {
 		return 0, false, fmt.Errorf("error reading lines for the order %v in Odoo\nERROR=%w", orderOdooXid, err)
 	}
@@ -200,7 +193,7 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 	odooNewLinesData := map[string]map[string]any{}
 	for _, shopifyLine := range order.Lines.Iter {
 		shopifyLineXid, _ := ShopifyIdToOdooXid(*shopifyLine.Id)
-		odooLineId, err := odoo.GetIDByXID("sale.order.line", shopifyLineXid)
+		odooLineId, err := odoo.GetIDByXID(ctx, "sale.order.line", shopifyLineXid)
 		if err != nil {
 			return 0, false, fmt.Errorf("error reading line %v from Odoo Order %v\nERROR=%w", shopifyLineXid, orderOdooXid, err)
 		}
@@ -212,7 +205,7 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 			"sequence":        sequence,
 		}
 		sequence += 1
-		taxes, err := shopifyTaxLinesToOdooIds(&shopifyLine.TaxLines, companyId)
+		taxes, err := shopifyTaxLinesToOdooIds(ctx, &shopifyLine.TaxLines, int(companyId))
 		if err != nil {
 			return 0, false, fmt.Errorf("error creating line %v from Odoo Order %v\nERROR=%w", shopifyLineXid, orderOdooXid, err)
 		}
@@ -226,26 +219,20 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 	}
 	if order.ShippingLine.Id != nil {
 		shopifyLineXid, _ := ShopifyIdToOdooXid(*order.ShippingLine.Id)
-		odooLineId, err := odoo.GetIDByXID("sale.order.line", shopifyLineXid)
+		odooLineId, err := odoo.GetIDByXID(ctx, "sale.order.line", shopifyLineXid)
 		if err != nil {
 			return 0, false, fmt.Errorf("error reading line %v from Odoo Order %v\nERROR=%w", shopifyLineXid, orderOdooXid, err)
 		}
 		carrierName := order.ShippingLine.Title
 		deliveryType := "base_on_rule"
+		carrierProductId := odoo.OdooDataManager.Data.DeliveryProducts.Webship
 		if shippingSku == odoo.TwoshipSku {
 			carrierName = "2Ship"
 			deliveryType = "twoship"
+			carrierProductId = odoo.OdooDataManager.Data.DeliveryProducts.Twoship
 			orderData["customer_delivery_instructions"] = strings.Trim(orderData["customer_delivery_instructions"].(string)+"\n"+order.ShippingLine.Title, " \n")
 		}
-		carrierProductId := idsBySku[shippingSku]
-		carrierData := map[string]any{
-			"name":              carrierName,
-			"product_id":        carrierProductId,
-			"delivery_type":     deliveryType,
-			"company_id":        false,
-			"integration_level": "rate",
-		}
-		carrier, err := odoo.FindFirstOrCreate("delivery.carrier", odoo.MapToDomain(carrierData), carrierData, nil)
+		carrier, err := odoo.OdooDataManager.GetDeliveryCarrier(ctx, carrierName, deliveryType, int(carrierProductId))
 		if err != nil {
 			return 0, false, fmt.Errorf("error searching for delivery carrier %v for Odoo Order %v\nERROR=%w", carrierName, orderOdooXid, err)
 		}
@@ -260,7 +247,7 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 			"sequence":        sequence,
 		}
 		sequence += 1
-		taxes, err := shopifyTaxLinesToOdooIds(&order.ShippingLine.TaxLines, companyId)
+		taxes, err := shopifyTaxLinesToOdooIds(ctx, &order.ShippingLine.TaxLines, int(companyId))
 		if err != nil {
 			return 0, false, fmt.Errorf("error creating line %v from Odoo Order %v\nERROR=%w", shopifyLineXid, orderOdooXid, err)
 		}
@@ -281,17 +268,17 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 
 	if odooId == 0 {
 		createData := map[string]any{}
-		if scheduledDate, err := computeScheduledDate(order.CreatedAt, companyId, &order.ShippingAddress); err == nil {
+		if scheduledDate, err := computeScheduledDate(order.CreatedAt, int(companyId), &order.ShippingAddress); err == nil {
 			createData["commitment_date"] = scheduledDate.Format(odoo.DateFormat)
 		}
 		maps.Copy(orderData, createData)
 		isNew = true
-		odooId, err = odoo.Create("sale.order", orderData, map[string]any{"xid": orderOdooXid})
+		odooId, err = odoo.Create(ctx, "sale.order", orderData, map[string]any{"xid": orderOdooXid})
 		if err != nil {
 			return 0, false, fmt.Errorf("error creating the order %v in Odoo\nERROR=%w", orderOdooXid, err)
 		}
 	} else {
-		err = odoo.Write("sale.order", odooId, orderData, nil)
+		err = odoo.Write(ctx, "sale.order", odooId, orderData, nil)
 		if err != nil {
 			return 0, false, fmt.Errorf("error updating the order %v in Odoo\nERROR=%w", orderOdooXid, err)
 		}
@@ -300,7 +287,7 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 	lineErrors := ""
 	for lineXid, lineData := range odooNewLinesData {
 		lineData["order_id"] = odooId
-		_, err := odoo.Create("sale.order.line", lineData, map[string]any{"xid": lineXid})
+		_, err := odoo.Create(ctx, "sale.order.line", lineData, map[string]any{"xid": lineXid})
 		if err != nil {
 			lineErrors += fmt.Sprintf("error creating new line %v for order %v in Odoo\nERROR=%v", lineXid, orderOdooXid, err)
 		}
@@ -312,18 +299,18 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 
 	if isNew {
 		confirmationContext := map[string]any{"followup_validation": false, "skip_preauth_payment": true}
-		confirmationRes, err := odoo.JsonRpcExecuteKw("sale.order", "action_confirm", []any{[]any{odooId}}, map[string]any{"context": confirmationContext})
+		confirmationRes, err := odoo.JsonRpcExecuteKw(ctx, "sale.order", "action_confirm", []any{[]any{odooId}}, map[string]any{"context": confirmationContext})
 		if err != nil {
-			odoo.Unlink("sale.order", odooId, nil) // Try to delete order as we could not confirm it
+			odoo.Unlink(ctx, "sale.order", odooId, nil) // Try to delete order as we could not confirm it
 			return 0, false, fmt.Errorf("error confirming the order %v in Odoo\nERROR=%w", orderOdooXid, err)
 		}
-		res, err := odoo.SearchReadById("sale.order", odooId, []string{"state"}, nil)
+		res, err := odoo.SearchReadById(ctx, "sale.order", odooId, []string{"state"}, nil)
 		if err != nil {
-			odoo.Unlink("sale.order", odooId, nil) // Try to delete order as we could not validate the confirmation
+			odoo.Unlink(ctx, "sale.order", odooId, nil) // Try to delete order as we could not validate the confirmation
 			return 0, false, fmt.Errorf("error validating order confirmation %v in Odoo\nERROR=%w", orderOdooXid, err)
 		}
 		if res["state"].(string) != "sale" {
-			odoo.Unlink("sale.order", odooId, nil) // Try to delete order as we could not validate the confirmation
+			odoo.Unlink(ctx, "sale.order", odooId, nil) // Try to delete order as we could not validate the confirmation
 			return 0, false, fmt.Errorf("could not validate order confirmation %v in Odoo. Expected=sale, Got=%v. Result: %v", orderOdooXid, res["state"], confirmationRes)
 		}
 	}
@@ -331,14 +318,37 @@ func shopifyOrderToOdoo(order *types.Order, customerOdooId int) (odooId int, isN
 	return odooId, isNew, nil
 }
 
-func ShopifyOrderToOdoo(shopifyId string) (odooId int, isNew bool, err error) {
-	order, err := adminapi.OrderMinimalById(shopifyId)
+func prefetchXidsForOrder(ctx context.Context, order *types.Order) error {
+	xids := make([]odoo.IrModelData, 0, 4+order.Lines.Length())
+	orderOdooXid, _ := ShopifyIdToOdooIrModelData(*order.Id, "sale.order")
+	xids = append(xids, *orderOdooXid)
+	for _, shopifyLine := range order.Lines.Iter {
+		shopifyLineXid, _ := ShopifyIdToOdooIrModelData(*shopifyLine.Id, "sale.order.line")
+		xids = append(xids, *shopifyLineXid)
+	}
+	if order.ShippingLine.Id != nil {
+		shopifyLineXid, _ := ShopifyIdToOdooIrModelData(*order.ShippingLine.Id, "sale.order.line")
+		xids = append(xids, *shopifyLineXid)
+	}
+	if order.ShippingAddress.Id != nil {
+		addressXid, _ := ShopifyIdToOdooIrModelData(*order.ShippingAddress.Id, "res.partner")
+		xids = append(xids, *addressXid)
+	}
+	if order.BillingAddress.Id != nil && *order.BillingAddress.Id != *order.ShippingAddress.Id {
+		addressXid, _ := ShopifyIdToOdooIrModelData(*order.BillingAddress.Id, "res.partner")
+		xids = append(xids, *addressXid)
+	}
+	return odoo.PrefetchIrModelData(ctx, xids)
+}
+
+func ShopifyOrderToOdoo(ctx context.Context, shopifyId string) (odooId int, isNew bool, err error) {
+	order, err := adminapi.OrderMinimalById(ctx, shopifyId)
 	if err != nil {
 		return 0, false, fmt.Errorf("error getting order %v from Shopify Admin API\nERROR=%w", shopifyId, err)
 	}
 
 	customerOdooXid, _ := ShopifyIdToOdooXid(*order.Customer.Id)
-	customerOdooId, err := odoo.GetIDByXID("res.partner", customerOdooXid)
+	customerOdooId, err := odoo.GetIDByXID(ctx, "res.partner", customerOdooXid)
 	if err != nil {
 		return 0, false, fmt.Errorf("error getting customer %w from Odoo", err)
 	}
@@ -350,18 +360,21 @@ func ShopifyOrderToOdoo(shopifyId string) (odooId int, isNew bool, err error) {
 	qfId := order.CustomAttribute("FarMetOrderId")
 	if qfId != "" {
 		qfShopifyId := "gid://shopify/Order/" + qfId
-		adminapi.AsQF(func() {
-			fullOrder, err = adminapi.OrderById(qfShopifyId)
+		adminapi.AsQF(ctx, func() {
+			fullOrder, err = adminapi.OrderById(ctx, qfShopifyId)
 		})
 		if err != nil {
 			return 0, false, fmt.Errorf("error getting QF order %v from Shopify Admin API\nERROR=%w", qfShopifyId, err)
 		}
 	} else {
-		fullOrder, err = adminapi.OrderById(shopifyId)
+		fullOrder, err = adminapi.OrderById(ctx, shopifyId)
 		if err != nil {
 			return 0, false, fmt.Errorf("error getting FM order %v from Shopify Admin API\nERROR=%w", shopifyId, err)
 		}
 	}
 
-	return shopifyOrderToOdoo(fullOrder, customerOdooId)
+	if err := prefetchXidsForOrder(ctx, fullOrder); err != nil {
+		return 0, false, err
+	}
+	return shopifyOrderToOdoo(ctx, fullOrder, customerOdooId)
 }

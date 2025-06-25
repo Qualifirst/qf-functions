@@ -1,6 +1,7 @@
 package shopify
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -10,7 +11,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 )
 
-func ValidateWebhook(request events.APIGatewayProxyRequest) error {
+func ValidateWebhook(ctx context.Context, request events.APIGatewayProxyRequest) error {
 	shopDomain, okDomain := request.Headers["x-shopify-shop-domain"]
 	hmacHeader, okHeader := request.Headers["x-shopify-hmac-sha256"]
 	shopifyTopic, okTopic := request.Headers["x-shopify-topic"]

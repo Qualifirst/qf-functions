@@ -1,13 +1,16 @@
-package netlify
+package app
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"runtime/trace"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 )
@@ -48,6 +51,65 @@ func CheckEnvMiddleware(function NetlifyFunction) NetlifyFunction {
 		}
 
 		return function(ctx, request)
+	}
+}
+
+func ProfilingMiddleware(function NetlifyFunction, filename string) NetlifyFunction {
+	return func(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+		if os.Getenv("PROFILING") == "1" && os.Getenv("ENV") == "LOCAL" {
+			path := os.Getenv("PROFILING_PATH")
+			if path != "" {
+				if string(path[len(path)-1]) != "/" {
+					path += "/"
+				}
+				filename = path + filename
+			}
+			filename += ".out"
+			f, err := os.Create(filename)
+			if err != nil {
+				log.Printf("!!! Could not create trace profile for %v: %v", filename, err)
+			} else {
+				defer f.Close()
+				if err := trace.Start(f); err != nil {
+					f.Close()
+					log.Printf("!!! Could not start trace profile for %v: %v", filename, err)
+				} else {
+					defer trace.Stop()
+					fmt.Printf("!!! Tracing on for: %v\n", filename)
+				}
+			}
+		}
+
+		return function(ctx, request)
+	}
+}
+
+func TimeoutMiddleware(function NetlifyFunction) NetlifyFunction {
+	return func(ctx context.Context, request events.APIGatewayProxyRequest) (*events.APIGatewayProxyResponse, error) {
+		timeoutCtx, cancel := context.WithTimeout(ctx, 9500*time.Millisecond)
+		defer cancel()
+
+		type result struct {
+			Response *events.APIGatewayProxyResponse
+			Error    error
+		}
+
+		resultChan := make(chan result, 1)
+
+		go func() {
+			response, err := function(timeoutCtx, request)
+			resultChan <- result{
+				Response: response,
+				Error:    err,
+			}
+		}()
+
+		select {
+		case res := <-resultChan:
+			return res.Response, res.Error
+		case <-timeoutCtx.Done():
+			return NetlifyResponse(int(http.StatusGatewayTimeout), "Request timed out")
+		}
 	}
 }
 

@@ -2,54 +2,28 @@ package adminapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"qf/go/app"
 	"qf/go/helpers"
 	"qf/go/shopify/adminapi/queries"
 	"qf/go/shopify/adminapi/types"
 )
 
-type queryConfig struct {
-	DomainKey    string
-	GraphQLQuery func(string, string, string, string, map[string]any) (any, error)
-}
-
-func (f *queryConfig) SetDomainKey(domainKey string, onlyIfEmpty bool) (reset func()) {
-	current := f.DomainKey
-	if onlyIfEmpty && current != "" {
-		return func() {}
-	}
-	f.DomainKey = domainKey
-	return func() {
-		f.DomainKey = current
-	}
-}
-func (f *queryConfig) SetGraphQLQuery(graphQLQuery func(string, string, string, string, map[string]any) (any, error), onlyIfNull bool) (reset func()) {
-	current := f.GraphQLQuery
-	if onlyIfNull && current != nil {
-		return func() {}
-	}
-	f.GraphQLQuery = graphQLQuery
-	return func() {
-		f.GraphQLQuery = current
-	}
-}
-
-var QueryConfig = queryConfig{}
-
 type Query[T any] struct{}
 
-func (f *Query[T]) CallGeneric(query queries.ShopifyQuery, variables map[string]any) (any, error) {
-	defer QueryConfig.SetDomainKey("FM", true)()
-	domain := os.Getenv(fmt.Sprintf("SHOPIFY_DOMAIN_%s", QueryConfig.DomainKey))
-	token := os.Getenv(fmt.Sprintf("SHOPIFY_ADMIN_API_ACCESS_TOKEN_%s", QueryConfig.DomainKey))
+func (f *Query[T]) CallGeneric(ctx context.Context, query queries.ShopifyQuery, variables map[string]any) (any, error) {
+	domainKey, _ := app.GetCacheValue(ctx, []any{"Shopify", "DomainKey"}, "FM")
+	domain := os.Getenv(fmt.Sprintf("SHOPIFY_DOMAIN_%s", domainKey))
+	token := os.Getenv(fmt.Sprintf("SHOPIFY_ADMIN_API_ACCESS_TOKEN_%s", domainKey))
 	if domain == "" || token == "" {
 		return nil, fmt.Errorf("missing necessary environment variables for Shopify Admin API call")
 	}
-	defer QueryConfig.SetGraphQLQuery(helpers.GraphQLQuery, true)()
+	graphQLQuery, _ := app.GetCacheValue(ctx, []any{"Shopify", "GraphQLQuery"}, helpers.GraphQLQuery)
 	url := fmt.Sprintf("https://%s/admin/api/2025-04/graphql.json", domain)
-	resp, err := QueryConfig.GraphQLQuery(url, "X-Shopify-Access-Token", token, query.Query, variables)
+	resp, err := graphQLQuery(ctx, url, "X-Shopify-Access-Token", token, query.Query, variables)
 	if err != nil {
 		return nil, err
 	}
@@ -74,8 +48,8 @@ func (f *Query[T]) CallGeneric(query queries.ShopifyQuery, variables map[string]
 	return resultData, nil
 }
 
-func (f *Query[T]) Call(query queries.ShopifyQuery, variables map[string]any) (*T, error) {
-	resultAny, err := f.CallGeneric(query, variables)
+func (f *Query[T]) Call(ctx context.Context, query queries.ShopifyQuery, variables map[string]any) (*T, error) {
+	resultAny, err := f.CallGeneric(ctx, query, variables)
 	if err != nil {
 		return nil, err
 	}
@@ -92,23 +66,23 @@ func (f *Query[T]) Call(query queries.ShopifyQuery, variables map[string]any) (*
 	return &result, nil
 }
 
-func AsQF(callable func()) {
-	defer QueryConfig.SetDomainKey("QF", false)()
+func AsQF(ctx context.Context, callable func()) {
+	defer app.SetCacheValue(ctx, []any{"Shopify", "DomainKey"}, "QF")()
 	callable()
 }
 
-func CustomerById(id string) (*types.Customer, error) {
-	return (&Query[types.Customer]{}).Call(queries.Customer, map[string]any{"id": id})
+func CustomerById(ctx context.Context, id string) (*types.Customer, error) {
+	return (&Query[types.Customer]{}).Call(ctx, queries.Customer, map[string]any{"id": id})
 }
-func CompanyById(id string) (*types.Company, error) {
-	return (&Query[types.Company]{}).Call(queries.Company, map[string]any{"id": id})
+func CompanyById(ctx context.Context, id string) (*types.Company, error) {
+	return (&Query[types.Company]{}).Call(ctx, queries.Company, map[string]any{"id": id})
 }
-func OrderMinimalById(id string) (*types.Order, error) {
-	return (&Query[types.Order]{}).Call(queries.OrderMinimal, map[string]any{"id": id})
+func OrderMinimalById(ctx context.Context, id string) (*types.Order, error) {
+	return (&Query[types.Order]{}).Call(ctx, queries.OrderMinimal, map[string]any{"id": id})
 }
-func OrderById(id string) (*types.Order, error) {
-	return (&Query[types.Order]{}).Call(queries.Order, map[string]any{"id": id})
+func OrderById(ctx context.Context, id string) (*types.Order, error) {
+	return (&Query[types.Order]{}).Call(ctx, queries.Order, map[string]any{"id": id})
 }
-func OrderWithTransactionsById(id string) (*types.Order, error) {
-	return (&Query[types.Order]{}).Call(queries.OrderWithTransactions, map[string]any{"id": id})
+func OrderWithTransactionsById(ctx context.Context, id string) (*types.Order, error) {
+	return (&Query[types.Order]{}).Call(ctx, queries.OrderWithTransactions, map[string]any{"id": id})
 }

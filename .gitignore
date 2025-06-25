@@ -237,4 +237,8 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
+# Profiling files
+*.prof
+*.out
+
 # End of https://www.toptal.com/developers/gitignore/api/node,visualstudiocode,linux,macos,windows,remix+netlify

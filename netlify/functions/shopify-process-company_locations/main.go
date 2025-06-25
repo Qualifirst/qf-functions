@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
-	qfn "qf/go/netlify"
+	"qf/go/app"
+	"qf/go/odoo"
 	"qf/go/shopifyodoo"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -15,26 +16,29 @@ func handler(ctx context.Context, request events.APIGatewayProxyRequest) (*event
 	var data map[string]any
 	err := json.Unmarshal([]byte(request.Body), &data)
 	if err != nil {
-		return qfn.NetlifyLogAndResponse(400, "Invalid JSON in request body", err)
+		return app.NetlifyLogAndResponse(400, "Invalid JSON in request body", err)
 	}
 
 	dataCompany, ok := data["company"].(map[string]any)
 	if !ok {
-		return qfn.NetlifyLogAndResponse(400, "Company data not in request body", nil)
+		return app.NetlifyLogAndResponse(400, "Company data not in request body", nil)
 	}
 	companyId, ok := dataCompany["admin_graphql_api_id"]
 	if !ok {
-		return qfn.NetlifyLogAndResponse(400, "Company GraphQL ID not in request body", nil)
+		return app.NetlifyLogAndResponse(400, "Company GraphQL ID not in request body", nil)
 	}
 
-	odooId, isNew, err := shopifyodoo.ShopifyCompanyToOdoo(companyId.(string))
+	odooId, isNew, err := shopifyodoo.ShopifyCompanyToOdoo(ctx, companyId.(string))
 	if err != nil {
-		return qfn.NetlifyLogAndResponse(500, "Error processing company", err)
+		return app.NetlifyLogAndResponse(500, "Error processing company", err)
 	}
 
-	return qfn.NetlifyLogAndJsonResponse(200, map[string]any{"id": odooId, "new": isNew}, nil)
+	return app.NetlifyLogAndJsonResponse(200, map[string]any{"id": odooId, "new": isNew}, nil)
 }
 
 func main() {
-	lambda.Start(qfn.CheckEnvMiddleware(qfn.AuthMiddleware(handler)))
+	lambda.Start(app.ProfilingMiddleware(
+		app.TimeoutMiddleware(app.CacheMiddleware(app.CheckEnvMiddleware(app.AuthMiddleware(odoo.OdooDataMiddleware(handler))))),
+		"shopify-process-company_locations",
+	))
 }

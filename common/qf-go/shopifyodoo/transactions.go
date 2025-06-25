@@ -1,6 +1,7 @@
 package shopifyodoo
 
 import (
+	"context"
 	"fmt"
 	"qf/go/helpers"
 	"qf/go/odoo"
@@ -10,10 +11,10 @@ import (
 	"time"
 )
 
-func shopifyTransactionToOdoo[T types.OrderTransactionInterface](order *types.Order, transaction T, setState string) (txOdooId int, isNew bool, err error) {
+func shopifyTransactionToOdoo[T types.OrderTransactionInterface](ctx context.Context, order *types.Order, transaction T, setState string) (txOdooId int, isNew bool, err error) {
 	txShopifyId := *transaction.GetId()
 	txOdooXid, _ := ShopifyIdToOdooXid(txShopifyId)
-	txOdooRes, err := odoo.ReadRecordByXID("payment.transaction", txOdooXid, []string{"id", "state"})
+	txOdooRes, err := odoo.ReadRecordByXID(ctx, "payment.transaction", txOdooXid, []string{"id", "state"})
 	if err != nil {
 		return 0, false, fmt.Errorf("error getting transaction %v from Odoo\nERROR=%w", txOdooXid, err)
 	}
@@ -29,7 +30,7 @@ func shopifyTransactionToOdoo[T types.OrderTransactionInterface](order *types.Or
 	}
 
 	orderOdooXid, _ := ShopifyIdToOdooXid(*order.Id)
-	orderOdooRes, err := odoo.ReadRecordByXID("sale.order", orderOdooXid, []string{"id", "company_id", "commercial_partner_id", "name"})
+	orderOdooRes, err := odoo.ReadRecordByXID(ctx, "sale.order", orderOdooXid, []string{"id", "company_id", "commercial_partner_id", "name"})
 	if err != nil || orderOdooRes == nil {
 		return 0, false, fmt.Errorf("error getting order %v from Odoo\nERROR=%w", orderOdooXid, err)
 	}
@@ -41,16 +42,19 @@ func shopifyTransactionToOdoo[T types.OrderTransactionInterface](order *types.Or
 		return 0, false, fmt.Errorf("incorrect data from order %v from Odoo (id: %v, company_id: %v, commercial_partner_id: %v, name: %v)", orderOdooXid, orderOdooId, companyOdooId, partnerOdooId, orderName)
 	}
 
-	defer odoo.GlobalContext(map[string]any{"allowed_company_ids": []int{companyOdooId}})()
+	defer odoo.WithContext(ctx, map[string]any{"allowed_company_ids": []int{companyOdooId}})()
 
-	currency, err := odoo.SearchId("res.currency", []any{[]any{"name", "=", "CAD"}}, nil)
+	currency, err := odoo.SearchId(ctx, "res.currency", []any{[]any{"name", "=", "CAD"}}, nil)
 	if err != nil {
 		return 0, false, fmt.Errorf("error getting currency CAD from Odoo\nERROR=%w", err)
 	}
 
-	acquirer, err := odoo.SearchFirstId("payment.acquirer", []any{[]any{"company_id", "=", companyOdooId}, []any{"name", "=ilike", "shopify"}}, nil)
-	if err != nil || acquirer == 0 {
-		return 0, false, fmt.Errorf("error getting acquirer Shopify from Odoo\nERROR=%w", err)
+	acquirer := odoo.OdooDataManager.Data.PaymentAcquirers.FM.Shopify
+	if companyOdooId == int(odoo.CompanyQF) {
+		acquirer = odoo.OdooDataManager.Data.PaymentAcquirers.QF.Shopify
+	}
+	if acquirer == 0 {
+		return 0, false, fmt.Errorf("payment acquirer for Shopify not found in Odoo data")
 	}
 
 	amount := transaction.GetUnsettledAmount()
@@ -78,12 +82,12 @@ func shopifyTransactionToOdoo[T types.OrderTransactionInterface](order *types.Or
 
 	if txOdooId == 0 {
 		isNew = true
-		txOdooId, err = odoo.Create("payment.transaction", txData, map[string]any{"xid": txOdooXid})
+		txOdooId, err = odoo.Create(ctx, "payment.transaction", txData, map[string]any{"xid": txOdooXid})
 		if err != nil {
 			return 0, false, fmt.Errorf("error creating transaction %v in Odoo\nERROR=%w", txOdooXid, err)
 		}
 	} else {
-		err := odoo.Write("payment.transaction", txOdooId, txData, nil)
+		err := odoo.Write(ctx, "payment.transaction", txOdooId, txData, nil)
 		if err != nil {
 			return 0, false, fmt.Errorf("error updating transaction %v in Odoo\nERROR=%w", txOdooXid, err)
 		}
@@ -92,34 +96,34 @@ func shopifyTransactionToOdoo[T types.OrderTransactionInterface](order *types.Or
 	return txOdooId, isNew, nil
 }
 
-func handleTransactionAuthorization(order *types.Order, transaction types.OrderTransaction) (odooId int, isNew bool, err error) {
-	return shopifyTransactionToOdoo(order, transaction, "authorized")
+func handleTransactionAuthorization(ctx context.Context, order *types.Order, transaction types.OrderTransaction) (odooId int, isNew bool, err error) {
+	return shopifyTransactionToOdoo(ctx, order, transaction, "authorized")
 }
 
-func handleTransactionCapture(order *types.Order, transaction types.OrderTransaction) (odooId int, isNew bool, err error) {
-	odooId, isNew, err = shopifyTransactionToOdoo(order, transaction, "done")
+func handleTransactionCapture(ctx context.Context, order *types.Order, transaction types.OrderTransaction) (odooId int, isNew bool, err error) {
+	odooId, isNew, err = shopifyTransactionToOdoo(ctx, order, transaction, "done")
 	if err != nil {
 		return odooId, isNew, err
 	}
 	if transaction.ParentTransaction.Id != nil {
-		_, _, err = shopifyTransactionToOdoo(order, transaction.ParentTransaction, "authorized")
+		_, _, err = shopifyTransactionToOdoo(ctx, order, transaction.ParentTransaction, "authorized")
 	}
 	return odooId, isNew, err
 }
 
-func handleTransactionSale(order *types.Order, transaction types.OrderTransaction) (odooId int, isNew bool, err error) {
-	return shopifyTransactionToOdoo(order, transaction, "done")
+func handleTransactionSale(ctx context.Context, order *types.Order, transaction types.OrderTransaction) (odooId int, isNew bool, err error) {
+	return shopifyTransactionToOdoo(ctx, order, transaction, "done")
 }
 
-func handleTransactionVoid(order *types.Order, transaction types.OrderTransaction) (odooId int, isNew bool, err error) {
+func handleTransactionVoid(ctx context.Context, order *types.Order, transaction types.OrderTransaction) (odooId int, isNew bool, err error) {
 	if transaction.ParentTransaction.Id != nil {
-		return shopifyTransactionToOdoo(order, transaction.ParentTransaction, "cancel")
+		return shopifyTransactionToOdoo(ctx, order, transaction.ParentTransaction, "cancel")
 	}
 	return 0, false, nil
 }
 
-func ShopifyTransactionToOdoo(orderShopifyId string, transactionShopifyId string) (odooId int, isNew bool, err error) {
-	order, err := adminapi.OrderWithTransactionsById(orderShopifyId)
+func ShopifyTransactionToOdoo(ctx context.Context, orderShopifyId string, transactionShopifyId string) (odooId int, isNew bool, err error) {
+	order, err := adminapi.OrderWithTransactionsById(ctx, orderShopifyId)
 	if err != nil {
 		return 0, false, fmt.Errorf("error getting order %v from Shopify Admin API\nERROR=%w", orderShopifyId, err)
 	}
@@ -141,13 +145,13 @@ func ShopifyTransactionToOdoo(orderShopifyId string, transactionShopifyId string
 
 	switch transaction.Kind {
 	case "AUTHORIZATION":
-		return handleTransactionAuthorization(order, transaction)
+		return handleTransactionAuthorization(ctx, order, transaction)
 	case "CAPTURE":
-		return handleTransactionCapture(order, transaction)
+		return handleTransactionCapture(ctx, order, transaction)
 	case "SALE":
-		return handleTransactionSale(order, transaction)
+		return handleTransactionSale(ctx, order, transaction)
 	case "VOID":
-		return handleTransactionVoid(order, transaction)
+		return handleTransactionVoid(ctx, order, transaction)
 	}
 
 	// Unsupported transaction, ignore

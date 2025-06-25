@@ -4,13 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
+	"net"
 	"os"
-	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-func PublishMessage(exchange, routingKey, body string) error {
+func PublishMessage(ctx context.Context, exchange, routingKey, body string, headers amqp.Table) error {
 	rHost := os.Getenv("RABBITMQ_HOST")
 	rUser := os.Getenv("RABBITMQ_USER")
 	rPass := os.Getenv("RABBITMQ_PASSWORD")
@@ -19,7 +20,12 @@ func PublishMessage(exchange, routingKey, body string) error {
 	}
 
 	rUrl := fmt.Sprintf("amqp://%s:%s@%s", rUser, rPass, rHost)
-	conn, err := amqp.Dial(rUrl)
+	config := amqp.Config{
+		Dial: func(network, addr string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, addr)
+		},
+	}
+	conn, err := amqp.DialConfig(rUrl, config)
 	if err != nil {
 		return fmt.Errorf("failed to connect to RabbitMQ:\n>>> %w", err)
 	}
@@ -31,13 +37,14 @@ func PublishMessage(exchange, routingKey, body string) error {
 	}
 	defer ch.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	allHeaders := amqp.Table{}
+	maps.Copy(allHeaders, headers)
 
 	err = ch.PublishWithContext(ctx, exchange, routingKey, false, false, amqp.Publishing{
 		ContentType:  "text/plain",
 		Body:         []byte(body),
 		DeliveryMode: amqp.Persistent,
+		Headers:      allHeaders,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to publish a message to RabbitMQ:\n>>> %w", err)

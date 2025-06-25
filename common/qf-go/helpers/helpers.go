@@ -2,6 +2,7 @@ package helpers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,7 +18,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-func GraphQLQuery(url string, authHeader string, authToken string, query string, variables map[string]any) (any, error) {
+func GraphQLQuery(ctx context.Context, url string, authHeader string, authToken string, query string, variables map[string]any) (any, error) {
 	requestBody, err := json.Marshal(map[string]any{
 		"query":     query,
 		"variables": variables,
@@ -26,7 +27,7 @@ func GraphQLQuery(url string, authHeader string, authToken string, query string,
 		return nil, fmt.Errorf("error marshalling GraphQL request:\n>>> %w", err)
 	}
 
-	request, err := http.NewRequest("POST", url, bytes.NewBuffer(requestBody))
+	request, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(requestBody))
 	if err != nil {
 		return nil, fmt.Errorf("error creating GraphQL query request:\n>>> %w", err)
 	}
@@ -73,24 +74,8 @@ func TempEnvVars(vars map[string]string) (reset func()) {
 	}
 }
 
-func TempSet[T any](variable *T, tempValue T) (reset func()) {
-	originalValue := *variable
-	*variable = tempValue
-	return func() {
-		*variable = originalValue
-	}
-}
-
 func StringPtr(s string) *string {
 	return &s
-}
-
-func JsonInt(val any) int {
-	floatVal, ok := val.(float64)
-	if !ok {
-		return 0
-	}
-	return int(floatVal)
 }
 
 func traverse[T any](obj any, key any, keys []any, fallback T) (T, error) {

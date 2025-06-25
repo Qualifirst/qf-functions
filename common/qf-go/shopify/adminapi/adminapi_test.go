@@ -1,7 +1,9 @@
 package adminapi
 
 import (
+	"context"
 	"fmt"
+	"qf/go/app"
 	"qf/go/helpers"
 	"qf/go/shopify/adminapi/queries"
 	"qf/go/shopify/adminapi/types"
@@ -9,7 +11,7 @@ import (
 	"testing"
 )
 
-func fakeGraphQLQuery(_ string, _ string, _ string, _ string, v map[string]any) (any, error) {
+func fakeGraphQLQuery(_ context.Context, _ string, _ string, _ string, _ string, v map[string]any) (any, error) {
 	res := v["response"]
 	if res == "error" {
 		return nil, fmt.Errorf("some GraphQL error")
@@ -95,8 +97,9 @@ func TestQueryCallGeneric_Errors(t *testing.T) {
 				"SHOPIFY_ADMIN_API_ACCESS_TOKEN_FM": tt.ShopifyToken,
 			})()
 			q := &Query[any]{}
-			defer QueryConfig.SetGraphQLQuery(fakeGraphQLQuery, false)()
-			res, err := q.CallGeneric(queries.ShopifyQuery{ResultKey: "result"}, map[string]any{"response": tt.GraphQLResponse})
+			ctx := app.ContextWithCache(context.Background())
+			defer app.SetCacheValue(ctx, []any{"Shopify", "GraphQLQuery"}, fakeGraphQLQuery)()
+			res, err := q.Call(ctx, queries.ShopifyQuery{ResultKey: "result"}, map[string]any{"response": tt.GraphQLResponse})
 			if err == nil {
 				t.Fatalf("expected error, but received (%T) %+v", res, res)
 			}
@@ -143,8 +146,9 @@ func TestSingularTypedQueryCall_Errors(t *testing.T) {
 				"SHOPIFY_ADMIN_API_ACCESS_TOKEN_FM": "X",
 			})()
 			q := &Query[types.Customer]{}
-			defer QueryConfig.SetGraphQLQuery(fakeGraphQLQuery, false)()
-			res, err := q.Call(queries.ShopifyQuery{ResultKey: "result"}, map[string]any{"response": tt.GraphQLResponse})
+			ctx := app.ContextWithCache(context.Background())
+			defer app.SetCacheValue(ctx, []any{"Shopify", "GraphQLQuery"}, fakeGraphQLQuery)()
+			res, err := q.Call(ctx, queries.ShopifyQuery{ResultKey: "result"}, map[string]any{"response": tt.GraphQLResponse})
 			if err == nil {
 				t.Fatalf("expected error, but received (%T) %+v", res, res)
 			}
@@ -194,8 +198,9 @@ func TestMultiTypedQueryCall_Errors(t *testing.T) {
 				"SHOPIFY_ADMIN_API_ACCESS_TOKEN_FM": "X",
 			})()
 			q := &Query[[]types.Customer]{}
-			defer QueryConfig.SetGraphQLQuery(fakeGraphQLQuery, false)()
-			res, err := q.Call(queries.ShopifyQuery{ResultKey: "result"}, map[string]any{"response": tt.GraphQLResponse})
+			ctx := app.ContextWithCache(context.Background())
+			defer app.SetCacheValue(ctx, []any{"Shopify", "GraphQLQuery"}, fakeGraphQLQuery)()
+			res, err := q.Call(ctx, queries.ShopifyQuery{ResultKey: "result"}, map[string]any{"response": tt.GraphQLResponse})
 			if err == nil {
 				t.Fatalf("expected error, but received (%T) %+v", res, res)
 			}
@@ -284,8 +289,9 @@ func TestEdgesTypedQueryCall_Errors(t *testing.T) {
 				"SHOPIFY_ADMIN_API_ACCESS_TOKEN_FM": "X",
 			})()
 			q := &Query[types.Edges[types.Customer]]{}
-			defer QueryConfig.SetGraphQLQuery(fakeGraphQLQuery, false)()
-			res, err := q.Call(queries.ShopifyQuery{ResultKey: "result"}, map[string]any{"response": tt.GraphQLResponse})
+			ctx := app.ContextWithCache(context.Background())
+			defer app.SetCacheValue(ctx, []any{"Shopify", "GraphQLQuery"}, fakeGraphQLQuery)()
+			res, err := q.Call(ctx, queries.ShopifyQuery{ResultKey: "result"}, map[string]any{"response": tt.GraphQLResponse})
 			if err == nil {
 				t.Fatalf("expected error, but received (%T) %+v", res, res)
 			}

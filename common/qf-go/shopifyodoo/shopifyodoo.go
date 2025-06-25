@@ -2,18 +2,35 @@ package shopifyodoo
 
 import (
 	"fmt"
+	"qf/go/odoo"
 	"strings"
 )
 
-func ShopifyIdToOdooXid(shopifyId string) (string, error) {
+func ShopifyIdToOdooIrModelData(shopifyId string, model string) (imd *odoo.IrModelData, err error) {
 	parts := strings.Split(shopifyId, "/")
 	if len(parts) != 5 {
-		return "", fmt.Errorf("invalid Shopify ID: %v", shopifyId)
+		return nil, fmt.Errorf("invalid Shopify ID: %v", shopifyId)
 	}
 	idNumber := strings.Split(parts[4], "?")[0]
 	objectType := strings.ToLower(parts[3])
 	if idNumber == "" || objectType == "" {
-		return "", fmt.Errorf("invalid Shopify ID: %v", shopifyId)
+		return nil, fmt.Errorf("invalid Shopify ID: %v", shopifyId)
 	}
-	return fmt.Sprintf("__export__.shopify_%s_%s", objectType, idNumber), nil
+	module := "__export__"
+	name := fmt.Sprintf("shopify_%s_%s", objectType, idNumber)
+	imd = &odoo.IrModelData{
+		Module: module,
+		Name:   name,
+		Xid:    module + "." + name,
+		Model:  model,
+	}
+	return imd, nil
+}
+
+func ShopifyIdToOdooXid(shopifyId string) (string, error) {
+	imd, err := ShopifyIdToOdooIrModelData(shopifyId, "")
+	if err != nil {
+		return "", err
+	}
+	return imd.Xid, nil
 }

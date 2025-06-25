@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestTraverse(t *testing.T) {
+func TestMapToDomain(t *testing.T) {
 	res := MapToDomain(map[string]any{
 		"string": "string",
 		"int":    1,
